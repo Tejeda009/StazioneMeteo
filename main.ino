@@ -87,6 +87,8 @@ int eeprom_addr = 0;
 float kalman_temp = 0;
 bool isNightMode = false;
 int wear_cont = 0; //per salvare l'eeprom dall'usura
+float history[128] = {0};
+int i = 0;
 
 //----kalman----
 float Q = 0.022;  // Incertezza del processo (quanto pensi che cambi la temp velocemente)    //-----------indicazioni su come usarlo--------
@@ -113,6 +115,7 @@ Task t_sensor(TASK_IMMEDIATE, TASK_ONCE, &sensors_setup, &runner, true, NULL, &d
 Task t_logic(interval, TASK_FOREVER, &process_logic, &runner);
 Task t_save_baseline(eeprom_interval, TASK_FOREVER, &save_baseline_func, &runner);
 Task t_update(TASK_IMMEDIATE, TASK_ONCE, &updateDisplays, &runner);
+Task t_graph(TASK_IMMEDIATE, TASK_ONCE, &graph, &runner);
 Task t_buttons(buttons_interval, TASK_FOREVER, &handleButtons, &runner);
 Task t_serial(100, TASK_FOREVER, &handleSerial, &runner);
 
@@ -199,6 +202,7 @@ void disable_logic() {
 void runner_setup() {
   runner.init();
   PrepareStatus();
+  PrepareStatus_setup();
   t_update.waitFor(&read);
   t_logic.waitFor(&ready);
   t_save_baseline.waitFor(&ready);
@@ -353,6 +357,9 @@ void readSensors() {
 
   //unione valori della temperatura con kalman
   kalman_temp = calculate_temp(temp_dht,temp_lm35);
+
+  history[i] = kalman_temp;
+  i++;
 
   //settaggio umidità per sgp30
   if(!sgp.setHumidity(abs_hum(kalman_temp, hum_dht))) Serial.println(F("All'sgp30 non garba la tua umidità"));
@@ -514,8 +521,22 @@ void updateDisplays() {
     u8g2_status.setCursor(0, 25);
     u8g2_status.print(isIrrigating ? F("IRRIGA: ON") : F("IRRIGA: OFF"));
   } while (u8g2_status.nextPage());
-
   logSerial();
+  t_update.disable();
+  t_graph.enable();
+}
+
+//disegno su schermo principale
+void graph() {
+  u8g2.clearBuffer();
+
+  //disegno
+  u8g2.drawLine(0, 163, 128, 63); //asse x
+  u8g2.drawbox(10, 20, 5, 40);
+
+
+  t_update.enable();
+  t_graph.disable();
 }
 
 //stampa seriale
