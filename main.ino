@@ -40,6 +40,7 @@ void lm35_read();
 float calculate_temp(float dht, float lm35);
 void mme(float raw, float &filtered);
 void logSerial();
+void updateHistory();
 
 // ---------------------------------------------------------------------- PIN
 // ----------------------------------
@@ -69,13 +70,13 @@ U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2_main(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 
 // ---------------------------------------------------------------- VARIABILI
 // GLOBALI ---------------------------
-float temp_dht, hum_dht, temp_lm35, hi;
+float temp_dht=15, hum_dht=50, temp_lm35=15, hi;
 int water_level;
 bool isAutoMode = true;
 bool isIrrigating = false;
 float kalman_temp = 0;
 bool safe_data = true;
-float history[128];
+float history[64];
 
 //----------------------------------------------------------------------
 // KALMAN------------------------
@@ -114,6 +115,11 @@ void setup() {
 
   // test del buzzer
   tone(PIN_BUZZER, 2000, 100);
+
+  //inizializzazione array grafico
+  for (int i = 0; i < 64; i++) {
+    history[i] = -100.0;
+  }
 
   // Inizializzazione sensori e pin (spostata qui dal task)
   sensors_setup();
@@ -169,6 +175,7 @@ void loop() { runner.execute(); }
 void process_logic() {
   readSensors();
   process_logic_internal();
+  updateHistory();
 }
 
 // gestione bottoni
@@ -186,6 +193,18 @@ void handleButtons() {
     } else if (btnAct.released()) {
       stopIrrigation();
     }
+  }
+}
+
+void updateHistory() {
+  static unsigned long lastHistoryUpdate = 0;
+  if (millis() - lastHistoryUpdate >= 60000 || lastHistoryUpdate == 0) {
+    lastHistoryUpdate = millis();
+    // Sposta i valori a sinistra
+    for (int i = 0; i < 59; i++) {
+      history[i] = history[i+1];
+    }
+    history[59] = kalman_temp;
   }
 }
 
@@ -352,57 +371,60 @@ void updateDisplays() {
 }
 
 //------------bitmap ---------------------
-static const unsigned char image_Layer_13_bits[] PROGMEM = {
-    0x80, 0x00, 0x84, 0x10, 0x08, 0x08, 0xc0, 0x01, 0x31, 0x46, 0x12,
-    0x24, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x12, 0x24, 0x31, 0x46,
-    0xc0, 0x01, 0x08, 0x08, 0x84, 0x10, 0x80, 0x00, 0x00, 0x00};
-static const unsigned char image_Layer_4_bits[] PROGMEM = {
-    0x38, 0x00, 0x44, 0x40, 0xd4, 0xa0, 0x54, 0x40, 0xd4, 0x1c, 0x54,
-    0x06, 0xd4, 0x02, 0x54, 0x02, 0x54, 0x06, 0x92, 0x1c, 0x39, 0x01,
-    0x75, 0x01, 0x7d, 0x01, 0x39, 0x01, 0x82, 0x00, 0x7c, 0x00};
-static const unsigned char image_Layer_5_bits[] PROGMEM = {
-    0x20, 0x00, 0x20, 0x00, 0x30, 0x00, 0x70, 0x00, 0x78, 0x00, 0xf8,
-    0x00, 0xfc, 0x01, 0xfc, 0x01, 0x7e, 0x03, 0xfe, 0x02, 0xff, 0x06,
-    0xff, 0x07, 0xfe, 0x03, 0xfe, 0x03, 0xfc, 0x01, 0xf0, 0x00};
 static const unsigned char image_ButtonCenter_bits[] PROGMEM = {
     0x1c, 0x22, 0x5d, 0x5d, 0x5d, 0x22, 0x1c};
 
 // prima pagina (dati)
 void first_page() {
   u8g2_main.firstPage();
-  do {
-    u8g2_main.clearBuffer();
+static const unsigned char image_Layer_13_bits[]  = {0x80,0x00,0x84,0x10,0x08,0x08,0xc0,0x01,0x31,0x46,0x12,0x24,0x08,0x08,0x08,0x08,0x08,0x08,0x12,0x24,0x31,0x46,0xc0,0x01,0x08,0x08,0x84,0x10,0x80,0x00,0x00,0x00};
+static const unsigned char image_Layer_4_bits[]  = {0x38,0x00,0x44,0x40,0xd4,0xa0,0x54,0x40,0xd4,0x1c,0x54,0x06,0xd4,0x02,0x54,0x02,0x54,0x06,0x92,0x1c,0x39,0x01,0x75,0x01,0x7d,0x01,0x39,0x01,0x82,0x00,0x7c,0x00};
+static const unsigned char image_Layer_5_bits[]  = {0x20,0x00,0x20,0x00,0x30,0x00,0x70,0x00,0x78,0x00,0xf8,0x00,0xfc,0x01,0xfc,0x01,0x7e,0x03,0xfe,0x02,0xff,0x06,0xff,0x07,0xfe,0x03,0xfe,0x03,0xfc,0x01,0xf0,0x00};
+  do{
     u8g2_main.setFontMode(1);
     u8g2_main.setBitmapMode(1);
-
+    // Layer 1
     u8g2_main.drawFrame(0, 0, 128, 64);
+
+    // Layer 2
     u8g2_main.drawLine(0, 12, 127, 12);
 
-    u8g2_main.setFont(u8g2_font_6x10_tf);
-    u8g2_main.setCursor(12, 10);
-    u8g2_main.print(F("-- Stazione Meteo --"));
+    // Layer 3
+    u8g2_main.setFont(u8g2_font_5x8_tr);
+    u8g2_main.drawStr(12, 10, "Staz. Meteo FreeSauro");
 
+    // Layer 4
     u8g2_main.drawXBM(5, 18, 16, 16, image_Layer_4_bits);
+
+    // Layer 5
     u8g2_main.drawXBM(6, 41, 11, 16, image_Layer_5_bits);
 
+    // Layer 6
     u8g2_main.drawLine(75, 13, 75, 63);
-    u8g2_main.setCursor(23, 33);
-    u8g2_main.print(kalman_temp, 1);
 
-    u8g2_main.setCursor(23, 24);
-    u8g2_main.print(F("Temp"));
+    // Layer 7
+    char temp[6];
+    dtostrf(kalman_temp,6,2,temp);
+    u8g2_main.drawUTF8(23, 33, temp);
 
-    u8g2_main.setCursor(23, 47);
-    u8g2_main.print(F("Hum"));
+    // Layer 8
+    u8g2_main.setFont(u8g2_font_4x6_tr);
+    u8g2_main.drawStr(23, 24, "Temperature");
 
-    u8g2_main.setCursor(22, 56);
-    u8g2_main.print(hum_dht, 1);
-    u8g2_main.setCursor(81, 45);
-    u8g2_main.print(F("HI"));
-    u8g2_main.setCursor(83, 53);
-    u8g2_main.print(hi, 1);
+    u8g2_main.drawStr(23, 47, "Humidity");
+    char hum[6];
+    dtostrf(hum_dht,6,2,hum);
+    u8g2_main.setFont(u8g2_font_profont10_tr);
+    u8g2_main.drawStr(22, 56, hum);
+    u8g2_main.setFont(u8g2_font_4x6_tr);
+    u8g2_main.drawStr(81, 45, "Heat Index");
+    char heat[6];
+    dtostrf(hi,6,2,heat);
+    u8g2_main.setFont(u8g2_font_profont10_tr);
+    u8g2_main.drawUTF8(83, 53, heat);
     u8g2_main.drawXBM(93, 21, 15, 16, image_Layer_13_bits);
 
+    u8g2_main.sendBuffer();
   } while (u8g2_main.nextPage());
 }
 
@@ -419,15 +441,13 @@ void second_page() {
     u8g2_main.print(F("2026-04-30 08:47"));
 
     u8g2_main.setCursor(3, 23);
-    u8g2_main.print(F("TVOC: "));
-    u8g2_main.print(F("NULL"));
+    u8g2_main.print(F("Abs Hum:"));
     u8g2_main.setCursor(3, 36);
-    u8g2_main.print(F("CO2: "));
-    u8g2_main.print(F("NULL"));
+    u8g2_main.print((float)abs_hum(kalman_temp, hum_dht));
 
     u8g2_main.setCursor(3, 63);
     u8g2_main.print(F("Mode: "));
-    u8g2_main.print(isAutoMode ? F("A") : F("M"));
+    u8g2_main.print(isAutoMode ? F("Auto") : F("Man"));
 
     u8g2_main.drawLine(1, 51, 125, 51);
     u8g2_main.drawLine(1, 10, 125, 10);
@@ -442,10 +462,59 @@ void second_page() {
 void graph() {
   u8g2_main.firstPage();
   do {
-    // disegno
-    u8g2_main.drawLine(0, 53, 128, 53); // asse x
-    u8g2_main.drawBox(10, 20, 5, 30);
-  } while (u8g2_main.nextPage());
+    u8g2_main.drawLine(15, 53, 128, 53); // asse x [cite: 64]
+    u8g2_main.drawLine(15, 10, 15, 53);  // asse y [cite: 64]
+
+    u8g2_main.setFont(u8g2_font_4x6_tf);
+    u8g2_main.setCursor(2, 8);
+    u8g2_main.print(F("Cronologia temp.")); // [cite: 65]
+
+    // 1. Trova min e max ignorando la sentinella -100
+    float min_t = 100, max_t = -100;
+    for (int i = 0; i < 60; i++) { // [cite: 66]
+      if (history[i] == -100.0) continue; // Salta le letture non ancora avvenute
+      if (history[i] < min_t) min_t = history[i]; // [cite: 67]
+      if (history[i] > max_t) max_t = history[i]; // [cite: 68]
+    }
+    
+    if (max_t == -100) { // Se non ci sono ancora dati reali [cite: 68]
+      min_t = 0; // [cite: 68]
+      max_t = 40; // [cite: 68]
+    }
+    if (max_t - min_t < 5) { // [cite: 69]
+      max_t += 2; // [cite: 69]
+      min_t -= 2; // [cite: 70]
+    }
+
+    // Scrivi i valori max e min sull'asse y
+    u8g2_main.setCursor(0, 15);
+    u8g2_main.print(max_t, 0); // [cite: 71]
+    u8g2_main.setCursor(0, 53);
+    u8g2_main.print(min_t, 0); // [cite: 71]
+
+    // 2. Disegna i punti e le linee in modo proporzionale
+    int prev_x = -1, prev_y = -1; // [cite: 71]
+    for (int i = 0; i < 60; i++) { // [cite: 72]
+      if (history[i] == -100.0) continue; // Salta i punti vuoti 
+      
+      // Mappa l'indice i (0..59) in modo fluido sullo spazio pixel X disponibile (16..127)
+      int x = map(i, 0, 59, 16, 127); 
+      
+      // Calcola l'altezza Y proporzionale
+      int y = 53 - ((history[i] - min_t) * 40.0 / (max_t - min_t)); // [cite: 76]
+      
+      // Contenimento di sicurezza nei limiti grafici dell'asse Y
+      if (y < 10) y = 10; // [cite: 77]
+      if (y > 53) y = 53; // [cite: 78]
+      
+      // Se esiste un punto precedente valido, traccia la linea di collegamento
+      if (prev_x != -1) {
+        u8g2_main.drawLine(prev_x, prev_y, x, y); // 
+      }
+      prev_x = x; // 
+      prev_y = y; // 
+    }
+  } while (u8g2_main.nextPage()); // [cite: 80]
 }
 
 // stampa seriale
@@ -454,16 +523,12 @@ void logSerial() {
   Serial.print(kalman_temp);
   Serial.print(F(" H:"));
   Serial.print(hum_dht);
-  Serial.print(F(" CO2:"));
-  Serial.print(F("NULL"));
-  Serial.print(F(" Lux:"));
-  Serial.print(F("NULL"));
   Serial.print(F(" HI:"));
   Serial.print(hi);
   Serial.print(F(" H2O:"));
   Serial.print(water_level);
   Serial.print(F(" Mode:"));
-  Serial.println(isAutoMode ? F("A") : F("M"));
+  Serial.println(isAutoMode ? F("Auto") : F("Man"));
   Serial.print(F(" Status: "));
   Serial.println(isIrrigating ? F("IRR") : F("NO"));
 }
