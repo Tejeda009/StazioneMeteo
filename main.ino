@@ -17,10 +17,7 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 #include <DHT.h>
-#include <Adafruit_SGP30.h>
-#include <BH1750.h>
 #include <Servo.h>
-#include <EEPROM.h>
 #include <TaskScheduler.h> //scheduler per ottimizzazione task
 
 //segnali
@@ -40,12 +37,6 @@ void graph();
 void first_page();
 void second_page();
 
-//struct per salvataggio nella eeprom
-struct baseline{
-  uint16_t eeprom_eco2;
-  uint16_t eeprom_tvoc;
-};
-
 // ---------------------------------------------------------------------- PIN ----------------------------------
 #define PIN_DHT         2
 #define PIN_BTN_MODE    3
@@ -62,8 +53,6 @@ struct baseline{
 // ------------------------------------------------------------- CONFIGURAZIONI SENSORI ---------------------------
 #define DHTTYPE DHT11
 DHT dht(PIN_DHT, DHTTYPE);
-Adafruit_SGP30 sgp;
-BH1750 lightMeter;
 Servo irrigationServo;
 
 // ----------------------------------------------------------------- SCHERMO ---
@@ -72,16 +61,12 @@ U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2_main(U8G2_R0, /* reset=*/ U8X8_PIN_NONE)
 
 // ---------------------------------------------------------------- VARIABILI GLOBALI ---------------------------
 float temp_dht, hum_dht, temp_lm35, hi;
-uint16_t tvoc, eco2, lux;
 int water_level;
 bool isAutoMode = true;
 bool isIrrigating = false;
-unsigned int eeprom_addr = 0;
 float kalman_temp = 0;
-unsigned int wear_cont = 0; //per salvare l'eeprom dall'usura
 bool safe_data = true;
 float history[128];
-unsigned int i = 0;
 
 //---------------------------------------------------------------------- KALMAN ------------------------
 float Q = 0.022;  // Incertezza del processo (quanto pensi che cambi la temp velocemente)    //-----------indicazioni su come usarlo--------
@@ -95,18 +80,14 @@ const float PESO_LM = 0.7; // per le altri costanti guarda calculate_temp()
 
 // ----_------------------------------------------------------------------ SOGLIE ----------------------------------------------
 const float TEMP_HIGH = 35.0;
-const uint16_t ECO2_HIGH = 1000;
 const int WATER_LOW = 300; // soglia per livello d'acqua
 const long interval = 2000; 
-const unsigned long eeprom_interval = 3600000UL; // 1 ora
 const float alfa = 0.1;
-const uint32_t settegiorni = 604800UL; // 7 giorni in secondi
 const int buttons_interval = 50;
 
 //-------------------------------------------------------------------- TASK SCHEDULER -------------------------------------------
 Task t_sensor(TASK_IMMEDIATE, TASK_ONCE, &sensors_setup, &runner, true, NULL, &disable_setup);
 Task t_logic(interval, TASK_FOREVER, &process_logic, &runner);
-Task t_save_baseline(eeprom_interval, TASK_FOREVER, &save_baseline_func, &runner);
 Task t_update(TASK_IMMEDIATE, TASK_ONCE, &updateDisplays, &runner);
 Task t_graph(TASK_IMMEDIATE, TASK_ONCE, &graph, &runner);
 Task t_first_page(TASK_IMMEDIATE, TASK_ONCE, &first_page, &runner);
@@ -120,8 +101,6 @@ void setup() {
   Serial.begin(9600);
   while(!Serial); //attesa avvio seriale
   Serial.println(F("Avvio....(Speriamo che funzioni)"));
-
-  runner_setup();
 
   // test del buzzer
   tone(PIN_BUZZER, 2000, 100);
@@ -151,12 +130,10 @@ void runner_setup() {
   PrepareStatus_setup();
   t_update.waitFor(&read);
   t_logic.waitFor(&ready);
-  t_save_baseline.waitFor(&ready);
   t_buttons.waitFor(&ready);
   
   t_sensor.enable();
   t_logic.enable();
-  t_save_baseline.enable();
   t_buttons.enable();
   t_serial.enable();
 }
@@ -174,9 +151,6 @@ void sensors_setup(){
   dht.begin();
   
   Wire.begin();
-  if(!lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) Serial.println(F("BH1750 non trovato"));
-
-  setup_sgp30();
 
   //servo
   irrigationServo.attach(PIN_SERVO);
@@ -187,34 +161,11 @@ void sensors_setup(){
   ready.signalComplete();
 }
 
-void setup_sgp30() {
-  if(!sgp.begin()) {
-    Serial.println(F("Sgp30 non trovato!"));
-  }
-  //provo a forzare un soft reset
-  if(!sgp.softReset()) {
-    Serial.println(F("Soft reset fallito"));
-  }
-  else{
-    sgp.IAQinit(); // se funziona allora lo faccio ripartire
-  }
-
-
-  //lettura valori per sgp30 da eeprom per calibrazione e settaggio baseline per sgp30
-  baseline eeprom_baseline;
-  EEPROM.get(eeprom_addr, eeprom_baseline);
-  //primo controllo validità
-  if(!isnan(eeprom_baseline.eeprom_tvoc) && !isnan(eeprom_baseline.eeprom_eco2) ){
-    sgp.setIAQBaseline(eeprom_baseline.eeprom_eco2, eeprom_baseline.eeprom_tvoc); //settaggi con controllo
-    wear_cont++;
-  }
-  else Serial.println(F("Lettura dalla eeprom fallita"));
-}
-
 // ---------------------------------------------------------------------- FINE SETUP --------------------------------------------------
 
 // ---------------------------------------------------------------------- LOGICA ------------------------------------------------
 void loop() {
+  
   runner.execute();
 }
 
@@ -257,11 +208,10 @@ void process_logic_internal() {
   }
 
   //allarme per CO2 e temperatura (emergenza grave)
-  if (kalman_temp > TEMP_HIGH || eco2 > ECO2_HIGH) {
+  if (kalman_temp > TEMP_HIGH ) {
     alarm = true;
-    if (eco2 > (ECO2_HIGH * 2)) {
-      tone(PIN_BUZZER, 1000, 200);
-    }
+    tone(PIN_BUZZER, 1000, 200);
+    
   }
  
   //gestione led
@@ -296,10 +246,7 @@ void readSensors() {
     kalman_temp = calculate_temp(temp_dht,temp_lm35);
   }
 
-  sgp30_read();
-
   //update luce, livello d'acqua e orario
-  secure_ligthRead();
   water_level = analogRead(PIN_WATER);
 
   read.signalComplete();
@@ -307,20 +254,6 @@ void readSensors() {
 
 // -------------------------- SGP30 (TVOC - eCO2) ------------------
 
-//funzione per salvae la baseline nella eeprom
-void save_baseline_func() {
-  baseline tosave;
-  if(sgp.getIAQBaseline(&tosave.eeprom_eco2, &tosave.eeprom_tvoc)){
-    if(wear_cont >  WEAR){
-      eeprom_addr+=sizeof(baseline);
-      wear_cont = 0;
-    }
-    EEPROM.put(eeprom_addr, tosave); // put è meglio di update per le struct
-    Serial.println(F("Salvataggio baseline riuscito"));
-    wear_cont++;
-  }
-  else Serial.println(F("Salvataggio baseline non riuscito"));
-}
 
 //calcolo umidità assoluta
 uint32_t abs_hum(float temperature, float humidity) {
@@ -329,19 +262,6 @@ uint32_t abs_hum(float temperature, float humidity) {
   const float absoluteHumidity = 216.7f * ((humidity / 100.0f) * 6.112f * exp((17.62f * temperature) / (243.12f + temperature)) / (273.15f + temperature)); // [g/m^3]
   const uint32_t absoluteHumidityScaled = static_cast<uint32_t>(1000.0f * absoluteHumidity); // [mg/m^3]
   return absoluteHumidityScaled;
-}
-
-//lettura sgp30
-void sgp30_read() {
-  //settaggio umidità per sgp30
-  if(!sgp.setHumidity(abs_hum(kalman_temp, hum_dht))) Serial.println(F("All'sgp30 non garba la tua umidità"));
-
-  //calcolo TVOC e eCO2
-  if (sgp.IAQmeasure()) {
-    tvoc = sgp.TVOC;
-    eco2 = sgp.eCO2;
-  }
-  else Serial.println(F("Lettura sgp30 fallita"));
 }
 
 // -------------------- DHT11 (temperatura - umidità) -------------
@@ -383,51 +303,6 @@ void lm35_read() {
   else Serial.println(F("Lettura LM35 fallita"));
 }
 
-// ---------------------- BH1750 (luce) -------------------------
-
-void secure_ligthRead() {
-  if (lightMeter.measurementReady()) {
-    lux = lightMeter.readLightLevel();
-
-    //preso dai doc della libreria
-    if (lux < 0) {
-      Serial.println(F("Error condition detected"));
-    } else {
-      if (lux > 40000.0) {
-        // reduce measurement time - needed in direct sun light
-        if (lightMeter.setMTreg(32)) {
-          Serial.println(
-              F("Setting MTReg to low value for high light environment"));
-        } else {
-          Serial.println(
-              F("Error setting MTReg to low value for high light environment"));
-        }
-      } else {
-        if (lux > 10.0) {
-          // typical light environment
-          if (lightMeter.setMTreg(69)) {
-            Serial.println(F(
-                "Setting MTReg to default value for normal light environment"));
-          } else {
-            Serial.println(F("Error setting MTReg to default value for normal "
-                             "light environment"));
-          }
-        } else {
-          if (lux <= 10.0) {
-            // very low light environment
-            if (lightMeter.setMTreg(138)) {
-              Serial.println(
-                  F("Setting MTReg to high value for low light environment"));
-            } else {
-              Serial.println(F("Error setting MTReg to high value for low "
-                               "light environment"));
-            }
-          }
-        }
-      }
-    }
-  }
-}
 
 // ----------------------------------------------------------------------- FILTRI e MEDIE ---------------------------------------------------------------
 
@@ -517,8 +392,8 @@ void second_page() {
     u8g2_main.setFont(u8g2_font_6x10_tf);
     u8g2_main.setCursor(2, 8); u8g2_main.print(F("2026-04-30 08:47"));
 
-    u8g2_main.setCursor(3, 23); u8g2_main.print(F("TVOC: ")); u8g2_main.print(tvoc);
-    u8g2_main.setCursor(3, 36); u8g2_main.print(F("CO2: ")); u8g2_main.print(eco2);
+    u8g2_main.setCursor(3, 23); u8g2_main.print(F("TVOC: ")); u8g2_main.print(F("NULL"));
+    u8g2_main.setCursor(3, 36); u8g2_main.print(F("CO2: ")); u8g2_main.print(F("NULL"));
 
     u8g2_main.setCursor(3, 63); u8g2_main.print(F("Mode: ")); u8g2_main.print(isAutoMode ? F("A") : F("M"));
 
@@ -548,8 +423,8 @@ void graph() {
 void logSerial() {
   Serial.print(F("T:")); Serial.print(kalman_temp);
   Serial.print(F(" H:")); Serial.print(hum_dht);
-  Serial.print(F(" CO2:")); Serial.print(eco2);
-  Serial.print(F(" Lux:")); Serial.print(lux);
+  Serial.print(F(" CO2:")); Serial.print(F("NULL"));
+  Serial.print(F(" Lux:")); Serial.print(F("NULL"));
   Serial.print(F(" HI:")); Serial.print(hi);
   Serial.print(F(" H2O:")); Serial.print(water_level);
   Serial.print(F(" Mode:")); Serial.println(isAutoMode ? F("A") : F("M")); 
@@ -570,4 +445,3 @@ void handleSerial() {
     }
   }
 }
-
